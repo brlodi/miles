@@ -17,7 +17,6 @@ definition(
   oauth: true
 )
 
-
 preferences {
   section("Expose these devices via the API") {
     // paragraph "Some devices (like many virtual switches) may not appear in the \"Most Devices\" list, but you should see them in one of the others."
@@ -35,25 +34,55 @@ preferences {
 }
 
 
+def initialize() {
+  if (!state.accessToken) createAccessToken()
+  if (!state.externalSubscribers) state.externalSubscribers = []
+  subscribeToAllDeviceEvents()
+}
+
 def installed() {
 	log.debug "Installed with settings: ${settings}"
-	initialize()
+  initialize()
 }
 
 def updated() {
 	log.debug "Updated with settings: ${settings}"
 	unsubscribe()
-	initialize()
+  initialize()
 }
 
-def initialize() {
-	if(!state.accessToken) {
-    createAccessToken()
-  }
+
+mappings {
+    path("/test") { action: [ GET: "apiTest" ] }
+    path("/location") { action: [ GET: "apiGetLocation" ] }
+    path("/devices") { action: [ GET: "apiGetDevices" ] }
+    path("/devices/:deviceId") { action: [ GET: "apiGetDevices" ] }
+    path("/devices/:deviceId/attributes") { action: [ GET: "apiGetDeviceAttributes" ] }
+    path("/devices/:deviceId/attributes/:attributeName") { action: [ GET: "apiGetDeviceAttribute" ] }
+    path("/run") { action: [ PUT: "apiRunCommand" ] }
+    path("/subscribers") {
+      action: [
+        POST: "apiRegisterExternalSubscriber",
+        DELETE: "apiRemoveExternalSubscriber"
+      ]
+    }
 }
 
 def getDeviceList() {
   (refreshList + sensorList + actuatorList - null).toSet()
+}
+
+def subscribeToAllDeviceEvents() {
+  deviceList.each { device ->
+    device.supportedAttributes.each { attribute ->
+      log.debug "Subscribing to $attribute.name for device $device.displayName"
+      subscribe(device, attribute.name, deviceChangeHandler)
+    }
+  }
+}
+
+def deviceChangeHandler(event) {
+  log.debug event
 }
  
 def buildJsonApiTopLevel(metaField, dataField) {
@@ -78,7 +107,7 @@ def apiGetDevices() {
         id: it.id,
         type: "Device",
         attributes: [
-          networkId: it.networkId,
+          networkId: it.deviceNetworkId,
           name: it.name,
           displayName: it.displayName,
           status: it.status,
@@ -120,10 +149,6 @@ def apiGetLocation() {
   buildJsonApiTopLevel(null, loc)
 }
 
-def apiGetDeviceCommands() {
-  // Is this necessary?
-}
-
 def apiRunCommand() {
   if (!request.JSON) {
     log.error "No command object provided"
@@ -147,12 +172,46 @@ def apiTest() {
   [ meta: "Response successful" ]
 }
 
-mappings {
-    path("/test") { action: [ GET: "apiTest" ] }
-    path("/location") { action: [ GET: "apiGetLocation" ] }
-    path("/devices") { action: [ GET: "apiGetDevices" ] }
-    path("/devices/:deviceId") { action: [ GET: "apiGetDevices" ] }
-    path("/devices/:deviceId/attributes") { action: [ GET: "apiGetDeviceAttributes" ] }
-    path("/devices/:deviceId/attributes/:attributeName") { action: [ GET: "apiGetDeviceAttribute" ] }
-    path("/run") { action: [ PUT: "apiRunCommand" ] }
+def apiRegisterExternalSubscriber() {
+  if (!request.JSON) {
+    log.error "No subscriber object provided"
+    return
+  }
+  
+  def newExtSub = [
+    ip: request.JSON.ipAddress,
+    port: request.JSON.port,
+    lastUpdate: now()
+  ]
+  
+  state.externalSubscribers << newExtSub
+  
+  // TODO: Send test update to new subscriber
+  
+  buildJsonApiTopLevel([
+    message: "Registered $newExtSub.ip:$newExtSub.port to receive updates for $location.name",
+    timestamp: "$newExtSub.lastUpdate"
+  ], null)
+}
+
+def apiRemoveExternalSubscriber() {
+  if (!request.JSON) {
+    log.error "No subscriber object provided"
+    return
+  }
+  
+  def targetExtSub = state.externalSubscribers.find {
+    it.ip == request.JSON.ipAddress && it.port == request.JSON.port
+  }
+  
+  if (!targetExtSub) {
+    // Respond with error
+  }
+  
+  state.externalSubscribers.removeElement targetExtSub
+  
+  buildJsonApiTopLevel([
+    message: "Removed $newExtSub.ip:$newExtSub.port from subscribers of $location.name",
+    timestamp: now()
+  ], null)
 }
